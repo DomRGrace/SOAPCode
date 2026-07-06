@@ -67,10 +67,9 @@ uv pip install torch==2.2.0 torchvision==0.17.0 torchaudio==2.2.0 \
 # Install openvla-oft and its dependencies
 uv pip install -e openvla-oft
 uv pip install -e openvla-oft/LIBERO
-uv pip install -r openvla-oft/experiments/robot/libero/libero_requirements.txt
 
-# Pin compatible versions
-uv pip install "numpy<2.0" bitsandbytes==0.42.0 accelerate==0.29.3
+# Install SOAP and remaining dependencies
+uv pip install -r SOAP/soap_implementation/requirements.txt
 ```
 
 ---

@@ -1,0 +1,12 @@
+torch==2.2.0
+torchvision==0.17.0
+torchaudio==2.2.0
+numpy<2.0
+bitsandbytes==0.42.0
+accelerate==0.29.3
+imageio[ffmpeg]
+robosuite==1.4.1
+bddl
+easydict
+cloudpickle
+gym
