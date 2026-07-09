@@ -138,7 +138,7 @@ An additional non-random ablation alongside `random`: instead of gating A_mem wr
 *proprioceptive* prediction error, `latent` mode gates on prediction error over the VLA's
 own next action-hidden-state h_{t+1} (projected into a 64-dim subspace). This isolates
 whether it's specifically proprioception that makes SOAP work, or whether any predictive-
-coding surprise signal over the model's own latent trajectory works comparably.
+coding surprise signal over the model's own latent trajectory works comparably. **Note that this is an active work in progress!**
 
 To enable it:
 
