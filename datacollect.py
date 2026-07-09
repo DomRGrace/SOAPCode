@@ -2,7 +2,11 @@
 datacollect.py
 
 Collects (h_t, a_t, Δs_{t+1}, z_{t+1}) training pairs from LIBERO-10 demo data
-for training the SOAP dual prediction head.
+for training the ProprioHead (see inference.py / mlp_train.py). z_{t+1} (projected
+visual embedding) is collected alongside but unused by the current pipeline — an
+earlier design predicted both proprio delta and next-frame visual embedding jointly,
+but the visual prediction target underperformed and was dropped in favor of a
+proprio-only head.
 
   h_t      : mean-pooled action hidden states from the frozen VLA at timestep t  (D,)
   a_t      : action chunk executed at timestep t, flattened                       (56,)

@@ -525,6 +525,8 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--suite", default="libero_10", choices=list(SUITE_CONFIGS.keys()),
                         help="LIBERO suite to evaluate on")
+    parser.add_argument("--out_dir", default=None,
+                        help="Override output directory (default: soap_implementation/logs/adapt_{suite})")
     args = parser.parse_args()
 
     suite = SUITE_CONFIGS[args.suite]
@@ -533,7 +535,7 @@ def main():
     NUM_TASKS  = suite["num_tasks"]
     MAX_STEPS  = suite["max_steps"]
     UNNORM_KEY = suite["unnorm_key"]
-    OUT_DIR    = os.path.join(_HERE, "logs", f"adapt_{args.suite}")
+    OUT_DIR    = args.out_dir if args.out_dir else os.path.join(_HERE, "logs", f"adapt_{args.suite}")
 
     print(f"Suite:      {TASK_NAME}")
     print(f"Checkpoint: {CHECKPOINT}")

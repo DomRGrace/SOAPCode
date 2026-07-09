@@ -10,3 +10,6 @@ bddl
 easydict
 cloudpickle
 gym
+matplotlib
+h5py
+tqdm
