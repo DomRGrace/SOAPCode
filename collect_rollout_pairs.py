@@ -1,8 +1,11 @@
 """
 collect_rollout_pairs.py
 
-Runs live LIBERO-10 policy rollouts and collects (h_t, a_t, Δs_K) pairs
+Runs live LIBERO-10 policy rollouts and collects (h_t, a_t, Δs_K, h_{t+1}) pairs
 labelled by episode outcome. Δs_K = s_{t+K} - s_t, matching test-time computation.
+h_{t+1} is the hidden state at the next VLA query — used to train the latent
+world-model surprise head (see latent_train.py), an ablation alternative to the
+proprioceptive ProprioHead signal.
 
 Saves:
   ./datasets/rollout_success_pairs.pt
@@ -176,7 +179,7 @@ def run_episode(vla, processor, cfg, env, task_label, proprio_projector, action_
 
             if prev_h is not None:
                 ds_k = torch.tensor(s_now - prev_s, dtype=torch.float32)
-                pairs.append((prev_h, prev_a, ds_k))
+                pairs.append((prev_h, prev_a, ds_k, h_t))  # h_t here is h_{t+1} relative to prev_h
 
             prev_h = h_t
             prev_a = a_t
@@ -214,8 +217,8 @@ def main():
     benchmark_dict = benchmark.get_benchmark_dict()
     task_suite     = benchmark_dict[TASK_NAME]()
 
-    all_success_h, all_success_a, all_success_ds, all_success_ep = [], [], [], []
-    all_failure_h, all_failure_a, all_failure_ds, all_failure_ep = [], [], [], []
+    all_success_h, all_success_a, all_success_ds, all_success_ep, all_success_hn = [], [], [], [], []
+    all_failure_h, all_failure_a, all_failure_ds, all_failure_ep, all_failure_hn = [], [], [], [], []
 
     for task_idx in range(NUM_TASKS):
         ckpt_path = Path(CKPT_DIR) / f"task{task_idx}.pt"
@@ -229,11 +232,13 @@ def main():
             all_failure_h.append(ckpt["failure_h"])
             all_failure_a.append(ckpt["failure_a"])
             all_failure_ds.append(ckpt["failure_ds"])
-            # Backwards-compatible: old checkpoints without ep ids get dummy ids
+            # Backwards-compatible: old checkpoints without ep ids / h_{t+1} get dummy values
             n_s = ckpt["success_h"].shape[0]
             n_f = ckpt["failure_h"].shape[0]
             all_success_ep.append(ckpt.get("success_ep", torch.full((n_s,), -1, dtype=torch.long)))
             all_failure_ep.append(ckpt.get("failure_ep", torch.full((n_f,), -1, dtype=torch.long)))
+            all_success_hn.append(ckpt.get("success_hn", torch.zeros(n_s, 4096)))
+            all_failure_hn.append(ckpt.get("failure_hn", torch.zeros(n_f, 4096)))
             print(f"  {n_s} success pairs, {n_f} failure pairs\n")
             continue
 
@@ -242,8 +247,8 @@ def main():
         env, task_label = get_libero_env(task, "openvla", resolution=256)
         print(f"Task {task_idx}: {task_label}")
 
-        task_sh, task_sa, task_sds, task_sep = [], [], [], []
-        task_fh, task_fa, task_fds, task_fep = [], [], [], []
+        task_sh, task_sa, task_sds, task_sep, task_shn = [], [], [], [], []
+        task_fh, task_fa, task_fds, task_fep, task_fhn = [], [], [], [], []
         n_success, n_fail = 0, 0
 
         for ep in range(NUM_EPISODES):
@@ -262,13 +267,16 @@ def main():
             h_ep  = torch.stack([p[0] for p in pairs])
             a_ep  = torch.stack([p[1] for p in pairs])
             ds_ep = torch.stack([p[2] for p in pairs])
+            hn_ep = torch.stack([p[3] for p in pairs])
             id_ep = torch.full((len(pairs),), ep_id, dtype=torch.long)
 
             if success:
-                task_sh.append(h_ep); task_sa.append(a_ep); task_sds.append(ds_ep); task_sep.append(id_ep)
+                task_sh.append(h_ep); task_sa.append(a_ep); task_sds.append(ds_ep)
+                task_sep.append(id_ep); task_shn.append(hn_ep)
                 n_success += len(pairs)
             else:
-                task_fh.append(h_ep); task_fa.append(a_ep); task_fds.append(ds_ep); task_fep.append(id_ep)
+                task_fh.append(h_ep); task_fa.append(a_ep); task_fds.append(ds_ep)
+                task_fep.append(id_ep); task_fhn.append(hn_ep)
                 n_fail += len(pairs)
 
         def cat_or_empty_2d(lst, dim):
@@ -281,19 +289,23 @@ def main():
         sa  = cat_or_empty_2d(task_sa,  56)
         sds = cat_or_empty_2d(task_sds, 8)
         sep = cat_or_empty_1d(task_sep)
+        shn = cat_or_empty_2d(task_shn, 4096)
         fh  = cat_or_empty_2d(task_fh,  4096)
         fa  = cat_or_empty_2d(task_fa,  56)
         fds = cat_or_empty_2d(task_fds, 8)
         fep = cat_or_empty_1d(task_fep)
+        fhn = cat_or_empty_2d(task_fhn, 4096)
 
         torch.save({
-            "success_h": sh, "success_a": sa, "success_ds": sds, "success_ep": sep,
-            "failure_h": fh, "failure_a": fa, "failure_ds": fds, "failure_ep": fep,
+            "success_h": sh, "success_a": sa, "success_ds": sds, "success_ep": sep, "success_hn": shn,
+            "failure_h": fh, "failure_a": fa, "failure_ds": fds, "failure_ep": fep, "failure_hn": fhn,
         }, ckpt_path)
         print(f"  Checkpoint saved → {ckpt_path.name}  ({n_success} success, {n_fail} failure pairs)\n")
 
-        all_success_h.append(sh);  all_success_a.append(sa);  all_success_ds.append(sds);  all_success_ep.append(sep)
-        all_failure_h.append(fh);  all_failure_a.append(fa);  all_failure_ds.append(fds);  all_failure_ep.append(fep)
+        all_success_h.append(sh);  all_success_a.append(sa);  all_success_ds.append(sds)
+        all_success_ep.append(sep); all_success_hn.append(shn)
+        all_failure_h.append(fh);  all_failure_a.append(fa);  all_failure_ds.append(fds)
+        all_failure_ep.append(fep); all_failure_hn.append(fhn)
 
     # Concatenate and save
     def cat_nonempty(lst):
@@ -304,13 +316,15 @@ def main():
     SA  = cat_nonempty(all_success_a)
     SDS = cat_nonempty(all_success_ds)
     SEP = cat_nonempty(all_success_ep)
+    SHN = cat_nonempty(all_success_hn)
     FH  = cat_nonempty(all_failure_h)
     FA  = cat_nonempty(all_failure_a)
     FDS = cat_nonempty(all_failure_ds)
     FEP = cat_nonempty(all_failure_ep)
+    FHN = cat_nonempty(all_failure_hn)
 
-    torch.save({"h": SH, "a": SA, "ds": SDS, "ep": SEP}, os.path.join(OUT_DIR, "rollout_success_pairs.pt"))
-    torch.save({"h": FH, "a": FA, "ds": FDS, "ep": FEP}, os.path.join(OUT_DIR, "rollout_failure_pairs.pt"))
+    torch.save({"h": SH, "a": SA, "ds": SDS, "ep": SEP, "hn": SHN}, os.path.join(OUT_DIR, "rollout_success_pairs.pt"))
+    torch.save({"h": FH, "a": FA, "ds": FDS, "ep": FEP, "hn": FHN}, os.path.join(OUT_DIR, "rollout_failure_pairs.pt"))
 
     print(f"Success pairs : {SH.shape[0]:,}  → rollout_success_pairs.pt")
     print(f"Failure pairs : {FH.shape[0]:,}  → rollout_failure_pairs.pt")

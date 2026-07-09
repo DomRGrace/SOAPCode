@@ -12,6 +12,15 @@ At every VLA query step (with one-step lag):
   6. Forward hook injects: h_adapted = h + (alpha/r) * (h @ A_mem.T) @ B_mem.T
      before the action head runs.
 
+Ablation modes (see MemoryLoRA.write):
+  "surprise" — delta_h from proprioceptive prediction error (above).
+  "random"   — delta_h replaced by unit Gaussian noise (undirected control).
+  "latent"   — delta_h from latent world-model prediction error instead of
+               proprioception: LatentHead predicts the VLA's own h_{t+1}
+               (projected) from (h_t, a_t); requires soap_latent_head.pt
+               (see latent_train.py). Falls out of MODES automatically if
+               that checkpoint isn't present.
+
 Effective weight decomposition:
   W_eff = W_merged + B_mem @ A_mem    (within LoRA subspace)
 
@@ -64,6 +73,7 @@ from experiments.robot.robot_utils import (
     set_seed_everywhere,
 )
 from inference import load_model, compute_surprise
+from latent_inference import load_latent_model
 from prismatic.vla.constants import NUM_ACTIONS_CHUNK
 
 # ---------------------------------------------------------------------------
@@ -99,9 +109,10 @@ SUITE_CONFIGS = {
 # ---------------------------------------------------------------------------
 # Config
 # ---------------------------------------------------------------------------
-DEVICE     = torch.device("cuda:0") if torch.cuda.is_available() else torch.device("cpu")
-MLP_PATH   = os.path.join(_HERE, "checkpoints", "soap_mlp_v3.pt")
-B_MEM_PATH = None   # set to os.path.join(_HERE, "checkpoints", "soap_b_mem.pt") to use meta-trained B_mem
+DEVICE       = torch.device("cuda:0") if torch.cuda.is_available() else torch.device("cpu")
+MLP_PATH     = os.path.join(_HERE, "checkpoints", "soap_mlp_v3.pt")
+LATENT_PATH  = os.path.join(_HERE, "checkpoints", "soap_latent_head.pt")   # optional; enables "latent" mode
+B_MEM_PATH   = None   # set to os.path.join(_HERE, "checkpoints", "soap_b_mem.pt") to use meta-trained B_mem
 
 NUM_EPISODES   = 50
 EPISODE_OFFSET = 0
@@ -185,15 +196,25 @@ class MemoryLoRA:
         self.S_mem.zero_()
 
     def write(self, h_t: torch.Tensor, a_t: torch.Tensor, ds_actual: torch.Tensor,
-              surprise_model, ds_mean, ds_std, random_update: bool = False) -> float:
-        """Titans-style A_mem update gated by ProprioHead prediction error.
+              surprise_model, ds_mean, ds_std, mode: str = "surprise",
+              latent_model=None, latent_proj=None, hn_mean=None, hn_std=None,
+              h_next: torch.Tensor = None) -> float:
+        """Titans-style A_mem update gated by a prediction-error signal.
 
-        Error signal: delta_h = d(MSE(ds_pred, ds_norm))/d(h_adapted)
         S_t = eta_s * S_{t-1} - theta_s * delta_h
         A_mem update: outer(B_mem.T @ S_t, h_t)
 
-        random_update: replace gradient with unit Gaussian noise (ablation control).
-        Returns proprio surprise MSE for logging.
+        mode:
+          "surprise" — delta_h = d(MSE(ProprioHead(h_adapted, a_t), ds_actual))/d(h_adapted).
+          "random"   — delta_h = unit Gaussian noise (ablation control); gating/logging
+                       still uses the proprio MSE above, unchanged.
+          "latent"   — delta_h = d(MSE(LatentHead(h_adapted, a_t), proj(h_next)))/d(h_adapted);
+                       gating/logging uses this latent MSE instead of the proprio one,
+                       since it's an independent surprise signal (requires latent_model,
+                       latent_proj, hn_mean, hn_std, h_next).
+
+        Returns the gating-loss MSE for logging (proprio MSE for "surprise"/"random",
+        latent MSE for "latent").
         """
         h_t       = h_t.to(DEVICE).float().detach()
         a_t       = a_t.to(DEVICE).float().detach()
@@ -203,18 +224,29 @@ class MemoryLoRA:
             delta     = (h_t @ self.A_mem.T) @ self.B_mem.T
             h_adapted = h_t + self.scale * delta
 
-        h_leaf  = h_adapted.detach().requires_grad_(True)
-        ha_norm = F.normalize(torch.cat([h_leaf.unsqueeze(0), a_t.unsqueeze(0)], dim=-1), p=2, dim=-1)
-        ds_norm = (ds_actual.unsqueeze(0) - ds_mean) / ds_std
-        ds_pred = surprise_model(ha_norm)
-        loss    = F.mse_loss(ds_pred, ds_norm)
-        loss.backward()
-        surprise_model.zero_grad()
+        h_leaf = h_adapted.detach().requires_grad_(True)
 
-        if random_update:
-            delta_h = torch.randn_like(h_leaf)                  # (D,) random ablation
+        if mode == "latent":
+            h_next  = h_next.to(DEVICE).float().detach()
+            ha_norm = F.normalize(torch.cat([h_leaf.unsqueeze(0), a_t.unsqueeze(0)], dim=-1), p=2, dim=-1)
+            hn_norm = ((h_next.unsqueeze(0) @ latent_proj) - hn_mean) / hn_std
+            hn_pred = latent_model(ha_norm)
+            loss    = F.mse_loss(hn_pred, hn_norm)
+            loss.backward()
+            latent_model.zero_grad()
+            delta_h = h_leaf.grad.detach()                      # (D,) latent world-model gradient
         else:
-            delta_h = h_leaf.grad.detach()                      # (D,) surprise gradient
+            ha_norm = F.normalize(torch.cat([h_leaf.unsqueeze(0), a_t.unsqueeze(0)], dim=-1), p=2, dim=-1)
+            ds_norm = (ds_actual.unsqueeze(0) - ds_mean) / ds_std
+            ds_pred = surprise_model(ha_norm)
+            loss    = F.mse_loss(ds_pred, ds_norm)
+            loss.backward()
+            surprise_model.zero_grad()
+
+            if mode == "random":
+                delta_h = torch.randn_like(h_leaf)              # (D,) random ablation
+            else:
+                delta_h = h_leaf.grad.detach()                  # (D,) surprise gradient
 
         if loss.item() >= SURPRISE_THRESHOLD:
             # Titans momentum: S_t = η * S_{t-1} - θ * ∇ℓ
@@ -316,7 +348,8 @@ def get_proprio_state(raw_obs):
 
 def run_episode(vla, processor, cfg, env, task_label, proprio_projector, action_head,
                 surprise_model, ds_mean, ds_std, mem_lora, adapt_enabled, initial_state,
-                random_update: bool = False):
+                mode: str = "surprise",
+                latent_model=None, latent_proj=None, hn_mean=None, hn_std=None):
 
     mem_lora.reset()
     env.reset()
@@ -355,7 +388,10 @@ def run_episode(vla, processor, cfg, env, task_label, proprio_projector, action_
                 if adapt_enabled:
                     signal = mem_lora.write(prev_h.to(DEVICE), prev_a.to(DEVICE),
                                             ds_actual, surprise_model, ds_mean, ds_std,
-                                            random_update=random_update)
+                                            mode=mode,
+                                            latent_model=latent_model, latent_proj=latent_proj,
+                                            hn_mean=hn_mean, hn_std=hn_std,
+                                            h_next=h_t)  # h_t is this iteration's hidden state == h_{t+1} vs prev_h
                 else:
                     signal = compute_surprise(surprise_model, ds_mean, ds_std, prev_h, prev_a, ds_actual)
                 surprises.append(signal)
@@ -382,7 +418,8 @@ def run_episode(vla, processor, cfg, env, task_label, proprio_projector, action_
 # ---------------------------------------------------------------------------
 
 def run_task(task_idx, task_suite, vla, processor, cfg, proprio_projector,
-             action_head, surprise_model, ds_mean, ds_std, mem_lora):
+             action_head, surprise_model, ds_mean, ds_std, mem_lora, modes,
+             latent_model=None, latent_proj=None, hn_mean=None, hn_std=None):
     import json
 
     task           = task_suite.get_task(task_idx)
@@ -392,17 +429,15 @@ def run_task(task_idx, task_suite, vla, processor, cfg, proprio_projector,
     print(f"Task {task_idx}: {task_label}")
     print(f"{'=':=<60}\n")
 
-    MODES   = ("surprise", "random", "baseline")
-    results = {m: [] for m in MODES}
+    results = {m: [] for m in modes}
     ep_data = {}
 
     for ep in range(NUM_EPISODES):
         ep_idx = EPISODE_OFFSET + ep
         ep_data[ep_idx] = {}
 
-        for mode in MODES:
+        for mode in modes:
             adapt_on = (mode != "baseline")
-            rand_on  = (mode == "random")
             set_seed_everywhere(ep_idx)
             print(f"  ep {ep + 1:2d}  [{mode:8s}] ...", end=" ", flush=True)
 
@@ -411,7 +446,9 @@ def run_task(task_idx, task_suite, vla, processor, cfg, proprio_projector,
                 proprio_projector, action_head,
                 surprise_model, ds_mean, ds_std, mem_lora, adapt_on,
                 initial_states[ep_idx],
-                random_update=rand_on,
+                mode=mode,
+                latent_model=latent_model, latent_proj=latent_proj,
+                hn_mean=hn_mean, hn_std=hn_std,
             )
             results[mode].append(success)
             ep_data[ep_idx][mode] = (success, surprises, times, replay_images)
@@ -420,7 +457,7 @@ def run_task(task_idx, task_suite, vla, processor, cfg, proprio_projector,
 
         # Save videos + curves if the adapted or baseline model failed
         if not ep_data[ep_idx]["surprise"][0] or not ep_data[ep_idx]["baseline"][0]:
-            for mode in MODES:
+            for mode in modes:
                 s, surprises, times, replay_images = ep_data[ep_idx][mode]
                 tag = f"task{task_idx}_ep{ep_idx}_{mode}"
 
@@ -451,7 +488,7 @@ def run_task(task_idx, task_suite, vla, processor, cfg, proprio_projector,
 
     n = NUM_EPISODES
     print(f"{'':=<50}")
-    for mode in MODES:
+    for mode in modes:
         print(f"  {mode:10s} success rate: {sum(results[mode])}/{n}")
     print(f"{'':=<50}\n")
 
@@ -459,7 +496,7 @@ def run_task(task_idx, task_suite, vla, processor, cfg, proprio_projector,
     records = []
     for ep in range(NUM_EPISODES):
         ep_idx = EPISODE_OFFSET + ep
-        for mode in MODES:
+        for mode in modes:
             s, surprises, _, _ = ep_data[ep_idx][mode]
             records.append({
                 "task_idx":          task_idx,
@@ -525,6 +562,16 @@ def main():
     print("Loading proprio surprise MLP...")
     surprise_model, ds_mean, ds_std = load_model(MLP_PATH)
 
+    latent_model = latent_proj = hn_mean = hn_std = None
+    if os.path.exists(LATENT_PATH):
+        print("Loading latent world-model surprise head...")
+        latent_model, latent_proj, hn_mean, hn_std = load_latent_model(LATENT_PATH)
+        MODES = ("surprise", "random", "latent", "baseline")
+    else:
+        print(f"  (no checkpoint at {LATENT_PATH} — skipping 'latent' mode; "
+              f"run latent_train.py then copy its output there to enable it)")
+        MODES = ("surprise", "random", "baseline")
+
     print(f"Initialising MemoryLoRA  (rank={MEM_RANK}, eta={ETA}, decay={DECAY})")
     mem_lora = MemoryLoRA(b_mem_path=B_MEM_PATH)
     _original_predict_action = action_head.predict_action
@@ -538,13 +585,14 @@ def main():
         all_results[task_idx] = run_task(
             task_idx, task_suite, vla, processor, cfg,
             proprio_projector, action_head,
-            surprise_model, ds_mean, ds_std, mem_lora,
+            surprise_model, ds_mean, ds_std, mem_lora, MODES,
+            latent_model=latent_model, latent_proj=latent_proj,
+            hn_mean=hn_mean, hn_std=hn_std,
         )
 
     MemoryLoRA.unpatch_action_head(action_head, _original_predict_action)
 
     # Final aggregate summary
-    MODES = ("surprise", "random", "baseline")
     totals = {m: 0 for m in MODES}
     n_total = NUM_TASKS * NUM_EPISODES
     print(f"\n{'':=<60}")

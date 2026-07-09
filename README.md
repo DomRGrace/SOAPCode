@@ -13,13 +13,16 @@ soap_implementation/
 ├── adapt.py                  # Main SOAP evaluation script
 ├── inference.py              # ProprioHead surprise computation
 ├── mlp_train.py              # ProprioHead training
+├── latent_inference.py       # LatentHead world-model surprise computation (ablation)
+├── latent_train.py           # LatentHead training (ablation)
 ├── collect_rollout_pairs.py  # Rollout data collection
 ├── datacollect.py            # Data collection utilities
 ├── verify_collect.py         # Collection verification
 ├── analyze.py                # Results analysis
 └── checkpoints/
     ├── soap_mlp_v3.pt        # Trained ProprioHead MLP
-    └── soap_b_mem.pt         # Meta-trained B_mem projection (optional)
+    ├── soap_b_mem.pt         # Meta-trained B_mem projection (optional)
+    └── soap_latent_head.pt   # Trained LatentHead (optional; enables "latent" ablation mode)
 ```
 
 ---
@@ -76,7 +79,7 @@ uv pip install -r SOAP/soap_implementation/requirements.txt
 
 ## Replicating Experimental Results
 
-All evaluations run 50 episodes per task across 10 tasks (500 total rollouts) and compare three modes simultaneously: SOAP (`surprise`), undirected random updates (`random`), and vanilla OpenVLA-OFT (`baseline`).
+All evaluations run 50 episodes per task across 10 tasks (500 total rollouts) and compare modes simultaneously: SOAP (`surprise`), undirected random updates (`random`), a latent world-model surprise ablation (`latent`, optional — see below), and vanilla OpenVLA-OFT (`baseline`).
 
 From the `soap_implementation/` directory:
 
@@ -123,6 +126,45 @@ To use the meta-trained B_mem projection instead of random init, set `B_MEM_PATH
 
 ```python
 B_MEM_PATH = os.path.join(_HERE, "checkpoints", "soap_b_mem.pt")
+```
+
+---
+
+## Ablations
+
+### Latent world-model surprise (`latent` mode)
+
+An additional non-random ablation alongside `random`: instead of gating A_mem writes on
+*proprioceptive* prediction error, `latent` mode gates on prediction error over the VLA's
+own next action-hidden-state h_{t+1} (projected into a 64-dim subspace). This isolates
+whether it's specifically proprioception that makes SOAP work, or whether any predictive-
+coding surprise signal over the model's own latent trajectory works comparably.
+
+To enable it:
+
+```bash
+# 1. Collect rollout pairs (now includes h_{t+1}; safe to rerun — per-task checkpoints
+#    without the new field are backfilled with zeros, so delete stale ones under
+#    ./datasets/rollout_checkpoints/ to actually pick up h_{t+1}).
+cd openvla-oft
+python collect_rollout_pairs.py
+
+# 2. Train LatentHead on the collected pairs.
+python latent_train.py
+# → saves ./datasets/soap_latent_head_v1.pt
+
+# 3. Promote the trained checkpoint into soap_implementation/checkpoints/.
+cp datasets/soap_latent_head_v1.pt ../SOAP/soap_implementation/checkpoints/soap_latent_head.pt
+```
+
+`adapt.py` checks for `checkpoints/soap_latent_head.pt` at startup — if present, `latent`
+is automatically added to the evaluation modes (`surprise`, `random`, `latent`, `baseline`);
+if absent, `adapt.py` runs as before with a printed notice.
+
+To compare only specific modes when summarising results:
+
+```bash
+python analyze.py --results_dir ./logs/adapt_libero_10 --modes surprise random latent baseline
 ```
 
 ---
