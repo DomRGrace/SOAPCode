@@ -1,4 +1,6 @@
 """
+THIS IS A WORK IN PROGRESS!!!!!!!!!
+
 latent_inference.py
 
 Latent world-model surprise — an ablation alternative to the proprioceptive

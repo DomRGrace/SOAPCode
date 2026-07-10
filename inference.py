@@ -4,7 +4,7 @@ inference.py
 SOAP surprise detection using the proprio-only MLP.
 
 IMPORTANT: h_t and a_t are concatenated and L2-normalised before use.
-           ds (proprio delta) is standardised using saved ds_mean/ds_std.
+           ds (proprio delta) is standardized using saved ds_mean/ds_std.
            Skipping these will produce meaningless surprise values.
 """
 
