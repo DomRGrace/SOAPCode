@@ -12,7 +12,7 @@ works just as well.
 
 IMPORTANT: h_t and a_t are concatenated and L2-normalised before use, exactly
            as in inference.py. h_{t+1} is projected through the frozen random
-           matrix P saved in the checkpoint, then standardised with hn_mean/
+           matrix P saved in the checkpoint, then standardized with hn_mean/
            hn_std. Skipping these will produce meaningless surprise values.
 """
 
