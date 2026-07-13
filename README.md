@@ -102,9 +102,9 @@ Checkpoints are downloaded automatically from HuggingFace on first run.
 
 | Mode | Success Rate |
 |------|-------------|
-| SOAP | 94.2% (471/500) |
-| Baseline | 92.6% (463/500) |
-| Random updates | 19.6% (98/500) |
+| SOAP | 95.2% (476/500) |
+| Baseline | 92.0% (460/500) |
+| Random updates | 16.4% (82/500) |
 
 All results obtained under 4-bit quantization on an NVIDIA RTX 4070 Super.
 
