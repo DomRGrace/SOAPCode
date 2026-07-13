@@ -4,6 +4,8 @@ Implementation for the paper *Surprise-Weighted Episodic Memory for Test-Time Ad
 
 SOAP augments a pretrained OpenVLA-OFT backbone with a low-rank episodic memory tensor updated at test time via proprioceptive prediction error, instantiating an analogue of surprise-modulated hippocampal encoding from complementary learning systems theory.
 
+![SOAP architecture](assets/architecture.png)
+
 ---
 
 ## Repository Structure
@@ -103,6 +105,7 @@ Checkpoints are downloaded automatically from HuggingFace on first run.
 | Mode | Success Rate |
 |------|-------------|
 | SOAP | 95.2% (476/500) |
+| Latent world-model surprise | 93.4% (467/500) |
 | Baseline | 92.0% (460/500) |
 | Random updates | 16.4% (82/500) |
 
