@@ -8,6 +8,50 @@ SOAP augments a pretrained OpenVLA-OFT backbone with a low-rank episodic memory 
 
 ---
 
+## Method
+
+### Proprioceptive surprise
+
+At each adaptation step, given the mean-pooled action-hidden state $h_t \in \mathbb{R}^{4096}$ and the flattened executed action chunk $a_t \in \mathbb{R}^{56}$, form the L2-normalized query:
+
+$$\hat h_t = \mathrm{L2Normalize}\big([\,h_t \,;\, a_t\,]\big)$$
+
+A small MLP (ProprioHead) predicts the standardized proprioceptive delta:
+
+$$\hat{\Delta s}_t = f_\theta(\hat h_t)$$
+
+The ground-truth delta $\Delta s_t = s_{t+1} - s_t \in \mathbb{R}^{8}$ is standardized with saved training statistics $\mu_{\Delta s}, \sigma_{\Delta s}$:
+
+$$\Delta s_t^{\text{norm}} = \frac{\Delta s_t - \mu_{\Delta s}}{\sigma_{\Delta s}}$$
+
+and surprise is defined as the prediction MSE:
+
+$$\text{surprise}_t = \frac{1}{8}\sum_{i=1}^{8}\Big(\hat{\Delta s}_{t,i} - \Delta s_{t,i}^{\text{norm}}\Big)^2$$
+
+### Hebbian memory write (surprise-gated, Titans-style)
+
+Episodic memory is a low-rank LoRA-style pair: a frozen random projection $B_{mem} \in \mathbb{R}^{D \times r}$ (columns L2-normalized) and a writable tensor $A_{mem} \in \mathbb{R}^{r \times D}$ (zero-initialized), with $D = 4096$, $r = 8$. Adapted hidden states are:
+
+$$h_t^{\text{adapted}} = h_t + \frac{\alpha}{r}\,\big(h_t A_{mem}^\top\big) B_{mem}^\top$$
+
+The write direction is the gradient of surprise with respect to the adapted hidden state:
+
+$$\delta_t = \nabla_{h_t^{\text{adapted}}}\ \text{surprise}_t$$
+
+which feeds an exponential momentum over past surprise (Titans-style):
+
+$$S_t = \eta_S\, S_{t-1} \;-\; \theta_S\, \delta_t$$
+
+If $\text{surprise}_t \geq \tau$ (the write-trigger threshold), $A_{mem}$ is updated by a decayed Hebbian (outer-product) rule:
+
+$$A_{mem} \leftarrow \gamma\, A_{mem} \;+\; \eta\,\big(B_{mem}^\top S_t\big)\, h_t^\top$$
+
+where $\gamma$ is the exponential forgetting factor, $\eta$ is the Hebbian learning rate, and $\big(B_{mem}^\top S_t\big) h_t^\top \in \mathbb{R}^{r \times D}$ is the outer product of the momentum "key" $B_{mem}^\top S_t \in \mathbb{R}^{r}$ with the (unadapted) hidden state $h_t$. See [Key Hyperparameters](#key-hyperparameters) below for the values of $\alpha, r, \eta, \gamma, \eta_S, \theta_S, \tau$.
+
+The `random` and `latent` ablations (see [Ablations](#ablations)) swap out $\delta_t$ for, respectively, unit Gaussian noise and the gradient of an analogous prediction-error term computed against the VLA's own next hidden state rather than $\Delta s_t$ — the write rule above is otherwise unchanged.
+
+---
+
 ## Repository Structure
 
 ```
