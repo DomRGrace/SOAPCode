@@ -20,7 +20,7 @@ $$h_t \in \mathbb{R}^{4096}\ \text{(hidden state)}, \qquad a_t \in \mathbb{R}^{5
 
 **Computation:**
 
-$$\hat h_t = \mathrm{L2Normalize}\big([\,h_t \,;\, a_t\,]\big)$$
+$$\hat h_t = \mathrm{L2Normalize}\big([h_t ; a_t]\big)$$
 
 $$\widehat{\Delta s}_t = f_\theta(\hat h_t), \qquad \Delta s_t^{norm} = \frac{\Delta s_t - \mu_{\Delta s}}{\sigma_{\Delta s}}$$
 
@@ -38,11 +38,11 @@ $$h_t^{adapted} = h_t + \frac{\alpha}{r}\big(h_t A_{mem}^\top\big) B_{mem}^\top$
 
 **Computation:**
 
-$$\delta_t = \nabla_{h_t^{adapted}}\ \text{surprise}_t, \qquad S_t = \eta_S\, S_{t-1} - \theta_S\, \delta_t$$
+$$\delta_t = \nabla_{h_t^{adapted}}\ \text{surprise}_t, \qquad S_t = \eta_S S_{t-1} - \theta_S \delta_t$$
 
 **Output** — write, only if surprise clears a threshold:
 
-$$A_{mem} \leftarrow \gamma\, A_{mem} \;+\; \eta\,\big(B_{mem}^\top S_t\big)\, h_t^\top \qquad \text{(if } \text{surprise}_t \geq \tau\text{)}$$
+$$A_{mem} \leftarrow \gamma A_{mem} + \eta\big(B_{mem}^\top S_t\big) h_t^\top \qquad \text{(if } \text{surprise}_t \geq \tau\text{)}$$
 
 Here $\gamma$ is the exponential forgetting factor, $\eta$ is the Hebbian learning rate, $\big(B_{mem}^\top S_t\big) h_t^\top$ is the outer product of the momentum-projected "key" with the (unadapted) hidden state, and $\tau$ is the write-trigger threshold. See [Key Hyperparameters](#key-hyperparameters) below for the values of every constant above.
 
