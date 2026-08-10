@@ -10,45 +10,43 @@ SOAP augments a pretrained OpenVLA-OFT backbone with a low-rank episodic memory 
 
 ## Method
 
-### Proprioceptive surprise
+The core mechanism runs in two stages at every adaptation step.
 
-At each adaptation step, given the mean-pooled action-hidden state $h_t \in \mathbb{R}^{4096}$ and the flattened executed action chunk $a_t \in \mathbb{R}^{56}$, form the L2-normalized query:
+### Stage 1 — Determining proprioceptive surprise
+
+**Inputs:**
+
+$$h_t \in \mathbb{R}^{4096}\ \text{(hidden state)}, \qquad a_t \in \mathbb{R}^{56}\ \text{(action chunk)}, \qquad \Delta s_t = s_{t+1} - s_t \in \mathbb{R}^{8}\ \text{(observed proprio delta)}$$
+
+**Computation:**
 
 $$\hat h_t = \mathrm{L2Normalize}\big([\,h_t \,;\, a_t\,]\big)$$
 
-A small MLP (ProprioHead) predicts the standardized proprioceptive delta:
+$$\widehat{\Delta s}_t = f_\theta(\hat h_t), \qquad \Delta s_t^{norm} = \frac{\Delta s_t - \mu_{\Delta s}}{\sigma_{\Delta s}}$$
 
-$$\hat{\Delta s}_t = f_\theta(\hat h_t)$$
+**Output:**
 
-The ground-truth delta $\Delta s_t = s_{t+1} - s_t \in \mathbb{R}^{8}$ is standardized with saved training statistics $\mu_{\Delta s}, \sigma_{\Delta s}$:
+$$\text{surprise}_t = \frac{1}{8}\sum_{i=1}^{8}\Big(\widehat{\Delta s}_{t,i} - \Delta s_{t,i}^{norm}\Big)^2$$
 
-$$\Delta s_t^{\text{norm}} = \frac{\Delta s_t - \mu_{\Delta s}}{\sigma_{\Delta s}}$$
+### Stage 2 — Surprise-driven Hebbian write
 
-and surprise is defined as the prediction MSE:
+**Inputs:** $\text{surprise}_t$ (evaluated at the adapted hidden state below), plus the current memory state.
 
-$$\text{surprise}_t = \frac{1}{8}\sum_{i=1}^{8}\Big(\hat{\Delta s}_{t,i} - \Delta s_{t,i}^{\text{norm}}\Big)^2$$
+Preliminary — the adapted hidden state that surprise is actually computed on:
 
-### Hebbian memory write (surprise-gated, Titans-style)
+$$h_t^{adapted} = h_t + \frac{\alpha}{r}\big(h_t A_{mem}^\top\big) B_{mem}^\top$$
 
-Episodic memory is a low-rank LoRA-style pair: a frozen random projection $B_{mem} \in \mathbb{R}^{D \times r}$ (columns L2-normalized) and a writable tensor $A_{mem} \in \mathbb{R}^{r \times D}$ (zero-initialized), with $D = 4096$, $r = 8$. Adapted hidden states are:
+**Computation:**
 
-$$h_t^{\text{adapted}} = h_t + \frac{\alpha}{r}\,\big(h_t A_{mem}^\top\big) B_{mem}^\top$$
+$$\delta_t = \nabla_{h_t^{adapted}}\ \text{surprise}_t, \qquad S_t = \eta_S\, S_{t-1} - \theta_S\, \delta_t$$
 
-The write direction is the gradient of surprise with respect to the adapted hidden state:
+**Output** — write, only if surprise clears a threshold:
 
-$$\delta_t = \nabla_{h_t^{\text{adapted}}}\ \text{surprise}_t$$
+$$A_{mem} \leftarrow \gamma\, A_{mem} \;+\; \eta\,\big(B_{mem}^\top S_t\big)\, h_t^\top \qquad \text{(if } \text{surprise}_t \geq \tau\text{)}$$
 
-which feeds an exponential momentum over past surprise (Titans-style):
+Here $\gamma$ is the exponential forgetting factor, $\eta$ is the Hebbian learning rate, $\big(B_{mem}^\top S_t\big) h_t^\top$ is the outer product of the momentum-projected "key" with the (unadapted) hidden state, and $\tau$ is the write-trigger threshold. See [Key Hyperparameters](#key-hyperparameters) below for the values of every constant above.
 
-$$S_t = \eta_S\, S_{t-1} \;-\; \theta_S\, \delta_t$$
-
-If $\text{surprise}_t \geq \tau$ (the write-trigger threshold), $A_{mem}$ is updated by a decayed Hebbian (outer-product) rule:
-
-$$A_{mem} \leftarrow \gamma\, A_{mem} \;+\; \eta\,\big(B_{mem}^\top S_t\big)\, h_t^\top$$
-
-where $\gamma$ is the exponential forgetting factor, $\eta$ is the Hebbian learning rate, and $\big(B_{mem}^\top S_t\big) h_t^\top \in \mathbb{R}^{r \times D}$ is the outer product of the momentum "key" $B_{mem}^\top S_t \in \mathbb{R}^{r}$ with the (unadapted) hidden state $h_t$. See [Key Hyperparameters](#key-hyperparameters) below for the values of $\alpha, r, \eta, \gamma, \eta_S, \theta_S, \tau$.
-
-The `random` and `latent` ablations (see [Ablations](#ablations)) swap out $\delta_t$ for, respectively, unit Gaussian noise and the gradient of an analogous prediction-error term computed against the VLA's own next hidden state rather than $\Delta s_t$ — the write rule above is otherwise unchanged.
+The `random` and `latent` ablations (see [Ablations](#ablations)) swap out the write direction $\delta_t$ for, respectively, unit Gaussian noise and the gradient of an analogous prediction-error term computed against the VLA's own next hidden state rather than the proprioceptive delta — the write rule itself is otherwise unchanged.
 
 ---
 
