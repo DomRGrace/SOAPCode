@@ -1,6 +1,6 @@
 # SOAP: Surprise-Weighted Episodic Memory for Test-Time Adaptation
 
-Implementation for the paper *Surprise-Weighted Episodic Memory for Test-Time Adaptation in Long-Horizon Manipulation*.
+Implementation for the paper (which is a work-in-progress) *Surprise-Weighted Episodic Memory for Test-Time Adaptation in Long-Horizon Manipulation*. 
 
 SOAP augments a pretrained OpenVLA-OFT backbone with a low-rank episodic memory tensor updated at test time via proprioceptive prediction error, instantiating an analogue of surprise-modulated hippocampal encoding from complementary learning systems theory.
 
